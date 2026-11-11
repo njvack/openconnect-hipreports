@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go run ./cmd/hipreport lint --checks-dir /nonexistent
+
+  e2e:
+    # Real openconnect (njvack/openconnect) runs hipreport as its
+    # --csd-wrapper against the fake gateway (njvack/gp-fake-gateway).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/checkout@v4
+        with:
+          repository: njvack/gp-fake-gateway
+          ref: ${{ vars.FAKE_GATEWAY_REF || 'main' }}
+          path: gp-fake-gateway
+      - uses: actions/checkout@v4
+        with:
+          repository: njvack/openconnect
+          ref: ${{ vars.OPENCONNECT_REF || 'master' }}
+          path: openconnect
+      - name: Install openconnect build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config gettext \
+            libxml2-dev libgnutls28-dev liblz4-dev iproute2 iputils-ping
+      - name: Build openconnect
+        working-directory: openconnect
+        run: |
+          ./autogen.sh
+          ./configure --disable-nls --with-vpnc-script=/bin/true
+          make -j"$(nproc)"
+      - run: go build -o hipreport ./cmd/hipreport
+      - run: go build -o fakegp ./cmd/fakegp
+        working-directory: gp-fake-gateway
+      - run: >
+          sudo e2e/run.sh "$PWD/openconnect/openconnect" "$PWD/gp-fake-gateway/fakegp"
+          "$PWD/hipreport" "$PWD/gp-fake-gateway/e2e/vpnc-script-min.sh"
+
+  macos:
+    # Live collection with the real macOS tools, and parity with hipreport.zsh.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: go build -o hipreport ./cmd/hipreport
+      - run: ./hipreport lint
+      - run: ./hipreport facts
+      - name: Report is well-formed
+        run: ./hipreport --md5 x | xmllint --noout -
+      - name: Parity with hipreport.zsh
+        run: scripts/parity.sh ./hipreport
+      - name: A recording replays to the same report
+        run: |
+          ./hipreport record -o rec.toml --md5 x
+          ./hipreport --md5 x | sed 's|<generate-time>.*</generate-time>||' >live.xml
+          ./hipreport --md5 x --fixture rec.toml | sed 's|<generate-time>.*</generate-time>||' >replay.xml
+          diff -u live.xml replay.xml
