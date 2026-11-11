@@ -6,8 +6,9 @@
 # Both get the same openconnect-style arguments. Differences that are
 # expected are normalized first: generate-time, and Packet Filter's
 # is-enabled, which hipreport.zsh reads with `sudo -n pfctl` and hipreport
-# reports as n/a unless it runs as root. Exits non-zero on any other
-# difference.
+# reports as n/a unless it runs as root. Whitespace-only element content
+# (the zsh script writes an empty list as <list>, newline, </list>) is
+# treated as empty. Exits non-zero on any other difference.
 emulate -R zsh
 setopt err_exit pipe_fail
 
@@ -23,6 +24,7 @@ args=(--cookie "authcookie=x&portal=p&user=${USER}&domain=Parity+Test&computer=$
 normalize() {
   perl -0pe '
     s{<generate-time>[^<]*</generate-time>}{<generate-time/>}g;
+    s{<([\w-]+)>\s*</\1>}{<$1/>}g;
     s{(name="Packet Filter"[^>]*/>\s*<is-enabled>)[^<]*(</is-enabled>)}{$1-$2}g;
   '
 }
@@ -33,7 +35,7 @@ $go_bin $args 2>$work/go.err | normalize >$work/go.xml
 if diff -u $work/zsh.xml $work/go.xml; then
   print "parity: identical ($(grep -c '<Prod ' $work/go.xml) products)"
 else
-  print -u2 "parity: reports differ (zsh -, go +)"
-  print -u2 "--- hipreport stderr"; cat $work/go.err >&2
+  print -u2 -- "parity: reports differ (zsh -, go +)"
+  print -u2 -- "--- hipreport stderr"; cat $work/go.err >&2
   exit 1
 fi
